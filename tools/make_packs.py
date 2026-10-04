@@ -26,9 +26,13 @@ except ImportError:  # pragma: no cover - 只做友好提示
     sys.exit("需要 Pillow:\n    python -m pip install Pillow")
 
 
-# 取自 26.1.2 服务端 jar 里的 version.json
-RESOURCE_PACK_FORMAT = 84
-DATA_PACK_FORMAT = 101
+# 取自 26.1.2 服务端 jar 里的 version.json 的 pack_version:
+#   resource_major 84 / resource_minor 0
+#   data_major 101 / data_minor 1
+# 新版格式号超过 64 之后 pack_format 不够用了,必须写 min_format 与 max_format,
+# 写法对照原版自带的 data/minecraft/datapacks/*/pack.mcmeta。
+RESOURCE_PACK_FORMAT = (84, 0)
+DATA_PACK_FORMAT = (101, 1)
 
 NAMESPACE = "ppt"
 PACK_NAME = "InGamePPT"
@@ -96,14 +100,20 @@ def compact(value) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def pack_meta(version: tuple[int, int], description: str) -> str:
+    major, minor = version
+    return json.dumps({
+        "pack": {
+            "description": description,
+            "min_format": [major, minor],
+            "max_format": major,
+        }
+    }, ensure_ascii=False, indent=2) + "\n"
+
+
 def make_resource_pack(root: Path, slides: list[tuple[int, Path]],
                        width: int, height: int) -> None:
-    write(root / "pack.mcmeta", json.dumps({
-        "pack": {
-            "pack_format": RESOURCE_PACK_FORMAT,
-            "description": f"{PACK_NAME} 幻灯片",
-        }
-    }, ensure_ascii=False, indent=2) + "\n")
+    write(root / "pack.mcmeta", pack_meta(RESOURCE_PACK_FORMAT, f"{PACK_NAME} 幻灯片"))
 
     total = len(slides)
     for index, (_, path) in enumerate(slides):
@@ -141,12 +151,7 @@ def make_data_pack(root: Path, slides: list[tuple[int, Path]],
     pages = len(slides)
     functions = root / f"data/{NAMESPACE}/function"
 
-    write(root / "pack.mcmeta", json.dumps({
-        "pack": {
-            "pack_format": DATA_PACK_FORMAT,
-            "description": f"{PACK_NAME} 幻灯片控制",
-        }
-    }, ensure_ascii=False, indent=2) + "\n")
+    write(root / "pack.mcmeta", pack_meta(DATA_PACK_FORMAT, f"{PACK_NAME} 幻灯片控制"))
 
     write(root / "data/minecraft/tags/function/load.json",
           json.dumps({"values": [f"{NAMESPACE}:init"]}, indent=2) + "\n")
@@ -257,10 +262,12 @@ def report(slides, resource_pack, data_pack, resource_zip, data_zip, width, heig
     print(f"  assets/{NAMESPACE}/items/     {pages} 个物品模型定义")
     print(f"  assets/{NAMESPACE}/models/    {pages} 个平面模型")
     print(f"  assets/{NAMESPACE}/textures/  {pages} 张贴图")
-    print(f"  格式 {RESOURCE_PACK_FORMAT},zip {resource_zip.stat().st_size / 1048576:.1f} MB")
+    print(f"  格式 {RESOURCE_PACK_FORMAT[0]}.{RESOURCE_PACK_FORMAT[1]},"
+          f"zip {resource_zip.stat().st_size / 1048576:.1f} MB")
 
     print(f"\n数据包: {data_pack}")
-    print(f"  格式 {DATA_PACK_FORMAT},zip {data_zip.stat().st_size / 1048576:.2f} MB")
+    print(f"  格式 {DATA_PACK_FORMAT[0]}.{DATA_PACK_FORMAT[1]},"
+          f"zip {data_zip.stat().st_size / 1048576:.2f} MB")
 
     print("\n=== 把这行填进 server.properties ===")
     print(f"resource-pack=<{resource_zip.name} 放到 HTTP 服务上后的 URL>")

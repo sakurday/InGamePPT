@@ -68,6 +68,22 @@ java -cp "out/plugin;out/probe" PackBuilder paper_server/plugins/InGamePPT/ppt d
 
 幻灯片文件规则两边一致:纯数字命名,`1.png`、`2.png`……,按数字顺序排序,其它文件一律忽略。
 
+### 关于 `pack.mcmeta` 的格式号
+
+26.1.2 的包格式号已经超过 64,此时**旧的 `pack_format` 字段不再够用**,客户端会直接报:
+
+```
+Pack declares support for version newer than 64, but is missing mandatory fields min_format and max_format
+```
+
+必须写成 `min_format` + `max_format`。生成器用的数值来自两个权威来源:
+
+- `resource_major` / `resource_minor` / `data_major` / `data_minor` 取自服务端 jar 里的 `version.json`
+- 字段写法对照原版自带的 `data/minecraft/datapacks/*/pack.mcmeta`
+
+当前是资源包 `min_format: [84, 0]` / `max_format: 84`,数据包 `min_format: [101, 1]` /
+`max_format: 101`。以后游戏版本更新时,改 `make_packs.py` 和 `PackBuilder.java` 顶部的两个常量即可。
+
 输出:
 
 ```

@@ -29,9 +29,15 @@ import java.util.zip.ZipOutputStream;
  */
 public final class PackBuilder {
 
-    /** Taken from version.json inside the 26.1.2 server jar. */
-    private static final int RESOURCE_PACK_FORMAT = 84;
-    private static final int DATA_PACK_FORMAT = 101;
+    /**
+     * Taken from version.json inside the 26.1.2 server jar: resource 84.0, data 101.1.
+     *
+     * <p>Above format 64 the old single {@code pack_format} field is not enough - the pack
+     * has to declare {@code min_format} and {@code max_format}. The shape below mirrors the
+     * vanilla {@code data/minecraft/datapacks/* /pack.mcmeta} files.
+     */
+    private static final int[] RESOURCE_PACK_FORMAT = {84, 0};
+    private static final int[] DATA_PACK_FORMAT = {101, 1};
 
     private static final String NAMESPACE = "ppt";
     private static final String PACK_NAME = "InGamePPT";
@@ -76,14 +82,7 @@ public final class PackBuilder {
 
     private static void writeResourcePack(Path root, SlideDeck deck, Path slidesFolder,
                                           int textureWidth, int textureHeight) throws IOException {
-        write(root.resolve("pack.mcmeta"), """
-                {
-                  "pack": {
-                    "pack_format": %d,
-                    "description": "%s 幻灯片"
-                  }
-                }
-                """.formatted(RESOURCE_PACK_FORMAT, PACK_NAME));
+        write(root.resolve("pack.mcmeta"), packMeta(RESOURCE_PACK_FORMAT, PACK_NAME + " 幻灯片"));
 
         for (int index = 0; index < deck.size(); index++) {
             SlideDeck.Slide slide = deck.slide(index);
@@ -135,14 +134,7 @@ public final class PackBuilder {
         int pages = deck.size();
         String functionDir = "data/" + NAMESPACE + "/function/";
 
-        write(root.resolve("pack.mcmeta"), """
-                {
-                  "pack": {
-                    "pack_format": %d,
-                    "description": "%s 幻灯片控制"
-                  }
-                }
-                """.formatted(DATA_PACK_FORMAT, PACK_NAME));
+        write(root.resolve("pack.mcmeta"), packMeta(DATA_PACK_FORMAT, PACK_NAME + " 幻灯片控制"));
 
         write(root.resolve("data/minecraft/tags/function/load.json"), """
                 {
@@ -242,10 +234,12 @@ public final class PackBuilder {
         System.out.printf("  assets/%s/items/       %d 个物品模型定义%n", NAMESPACE, deck.size());
         System.out.printf("  assets/%s/models/      %d 个平面模型%n", NAMESPACE, deck.size());
         System.out.printf("  assets/%s/textures/    %d 张贴图%n", NAMESPACE, deck.size());
-        System.out.printf("  版本 %d, zip %.1f MB%n", RESOURCE_PACK_FORMAT, Files.size(resourceZip) / 1048576.0);
+        System.out.printf("  格式 %d.%d, zip %.1f MB%n",
+                RESOURCE_PACK_FORMAT[0], RESOURCE_PACK_FORMAT[1], Files.size(resourceZip) / 1048576.0);
 
         System.out.printf("%n数据包: %s%n", dataPack);
-        System.out.printf("  版本 %d, zip %.2f MB, %d 个函数文件%n", DATA_PACK_FORMAT,
+        System.out.printf("  格式 %d.%d, zip %.2f MB, %d 个函数文件%n",
+                DATA_PACK_FORMAT[0], DATA_PACK_FORMAT[1],
                 Files.size(dataZip) / 1048576.0, countFiles(dataPack.resolve("data")));
 
         System.out.printf("%n=== 把下面三行填进 server.properties ===%n");
@@ -259,6 +253,24 @@ public final class PackBuilder {
 
     private static String number(double value) {
         return value == Math.rint(value) ? String.valueOf((long) value) : String.valueOf(value);
+    }
+
+    /**
+     * Builds pack.mcmeta in the shape 26.1.2 expects.
+     *
+     * <p>{@code min_format} may be {@code [major, minor]} while {@code max_format} is the
+     * major version, which is exactly how the vanilla packs in the client jar write it.
+     */
+    private static String packMeta(int[] version, String description) {
+        return """
+                {
+                  "pack": {
+                    "description": "%s",
+                    "min_format": [ %d, %d ],
+                    "max_format": %d
+                  }
+                }
+                """.formatted(description, version[0], version[1], version[0]);
     }
 
     // ---------------------------------------------------------------- helpers
