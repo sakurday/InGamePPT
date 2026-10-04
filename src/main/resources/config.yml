@@ -1,0 +1,14 @@
+# Which item is used to mark the two corners of a screen.
+wand: GOLDEN_AXE
+
+# Which item is used to flip pages while a deck is playing.
+# Left click = previous page, right click = next page.
+paging-wand: DIAMOND_AXE
+
+# Folder (inside plugins/InGamePPT) that holds the slides. Files must be named after
+# their page number, for example 1.png, 2.png, 3.png.
+ppt-folder: ppt
+
+# Whether new images are dithered by default. Dithering looks much better for photos and
+# gradients, and costs a little sharpness on flat colours.
+default-dither: true

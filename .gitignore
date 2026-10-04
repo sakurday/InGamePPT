@@ -1,0 +1,31 @@
+# ---------------------------------------------------------------- build output
+build/
+out/
+.gradle/
+
+# ---------------------------------------------------------------- local toolchain
+# paper-api and its dependencies, downloaded on demand by build.ps1
+.tools/
+
+# ---------------------------------------------------------------- scratch material
+# Downloaded API dumps, generated previews and one-off demo assets.
+.research/
+preview-out/
+demo/
+
+# ---------------------------------------------------------------- test server
+# A full Paper server lives here: 50 MB server jar, worlds, logs, plugin data.
+paper_server/
+
+# ---------------------------------------------------------------- editors
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# ---------------------------------------------------------------- safety net
+# Nothing in this project is a binary that belongs in git. This also stops the
+# 50 MB server jar or a built plugin from being committed by accident.
+*.jar
+*.class
+*.zip

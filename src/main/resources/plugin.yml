@@ -1,0 +1,17 @@
+name: InGamePPT
+version: '${version}'
+main: dev.ingameppt.InGamePptPlugin
+api-version: '26.1'
+description: Project slides onto a wall of item frames using maps.
+authors: [InGamePPT]
+
+commands:
+  ppt:
+    description: In-game slide screen controls
+    usage: "/ppt <select|play|+|-> - /ppt select 选区,/ppt play 从 1.png 开始播放"
+    permission: ingameppt.use
+
+permissions:
+  ingameppt.use:
+    description: Allows using /ppt
+    default: op
