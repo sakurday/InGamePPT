@@ -12,6 +12,7 @@ out/
 .research/
 preview-out/
 demo/
+dist/
 
 # ---------------------------------------------------------------- test server
 # A full Paper server lives here: 50 MB server jar, worlds, logs, plugin data.
