@@ -90,7 +90,11 @@ public final class PackBuilder {
 
             BufferedImage source = ImagePipeline.load(slide.file().toString(), slidesFolder);
             BufferedImage fitted = ImagePipeline.containFit(source, textureWidth, textureHeight);
-            Path texture = root.resolve("assets/" + NAMESPACE + "/textures/page/slide_" + page + ".png");
+            // Textures have to live under textures/item/ (or textures/block/): the atlas is
+            // built from directories declared in assets/minecraft/atlases/items.json, so a
+            // texture anywhere else is never stitched and the model renders as the
+            // black-and-magenta missing texture.
+            Path texture = root.resolve("assets/" + NAMESPACE + "/textures/item/page/slide_" + page + ".png");
             Files.createDirectories(texture.getParent());
             ImageIO.write(fitted, "png", texture.toFile());
 
@@ -110,7 +114,7 @@ public final class PackBuilder {
             write(root.resolve("assets/" + NAMESPACE + "/models/page_" + page + ".json"), """
                     {
                       "textures": {
-                        "0": "%s:page/slide_%d"
+                        "0": "%s:item/page/slide_%d"
                       },
                       "elements": [
                         {

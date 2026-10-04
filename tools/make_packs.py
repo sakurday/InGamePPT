@@ -118,7 +118,9 @@ def make_resource_pack(root: Path, slides: list[tuple[int, Path]],
     total = len(slides)
     for index, (_, path) in enumerate(slides):
         page = index + 1
-        texture = root / f"assets/{NAMESPACE}/textures/page/slide_{page}.png"
+        # 必须放在 textures/item/ 下:图集是按目录声明的(assets/minecraft/atlases/items.json
+        # 只收录 item/ 目录),放在别处的贴图不会被打进图集,模型就渲染成黑紫格子。
+        texture = root / f"assets/{NAMESPACE}/textures/item/page/slide_{page}.png"
         texture.parent.mkdir(parents=True, exist_ok=True)
         fit_to_screen(path, width, height).save(texture, "PNG", optimize=True)
         if page % 20 == 0 or page == total:
@@ -134,7 +136,7 @@ def make_resource_pack(root: Path, slides: list[tuple[int, Path]],
         # 居中,所以展示实体的位置就是屏幕中心。正反两面都贴图,其中一面是镜像的,
         # 看到反字就把实体转 180 度。
         write(root / f"assets/{NAMESPACE}/models/page_{page}.json", json.dumps({
-            "textures": {"0": f"{NAMESPACE}:page/slide_{page}"},
+            "textures": {"0": f"{NAMESPACE}:item/page/slide_{page}"},
             "elements": [{
                 "from": [-8, -8, 7.5],
                 "to": [8, 8, 8.5],
@@ -239,6 +241,34 @@ def zip_folder(source: Path, target: Path) -> None:
             archive.write(path, path.relative_to(source).as_posix())
 
 
+def verify(resource_pack: Path, pages: int) -> list[str]:
+    """生成后的自检:路径、引用、图集目录三件事必须成立,否则游戏里就是黑紫格子。"""
+    problems: list[str] = []
+    for page in range(1, pages + 1):
+        item_file = resource_pack / f"assets/{NAMESPACE}/items/page_{page}.json"
+        model_file = resource_pack / f"assets/{NAMESPACE}/models/page_{page}.json"
+        if not item_file.is_file():
+            problems.append(f"第 {page} 页缺少物品模型定义")
+            continue
+        if not model_file.is_file():
+            problems.append(f"第 {page} 页缺少平面模型")
+            continue
+
+        target = json.loads(item_file.read_text(encoding="utf-8"))["model"]["model"]
+        namespace, _, path = target.partition(":")
+        if not (resource_pack / f"assets/{namespace}/models/{path}.json").is_file():
+            problems.append(f"第 {page} 页物品模型指向的模型不存在: {target}")
+
+        for texture in json.loads(model_file.read_text(encoding="utf-8"))["textures"].values():
+            namespace, _, path = texture.partition(":")
+            if not (resource_pack / f"assets/{namespace}/textures/{path}.png").is_file():
+                problems.append(f"第 {page} 页模型引用的贴图不存在: {texture}")
+            elif not path.startswith(("item/", "block/")):
+                # 图集只收录 textures/item 与 textures/block,别处的贴图永远不会被打包
+                problems.append(f"第 {page} 页贴图不在图集收录的目录里: {texture}")
+    return problems
+
+
 def sha1(path: Path) -> str:
     digest = hashlib.sha1()
     with path.open("rb") as handle:
@@ -324,6 +354,13 @@ def main() -> None:
 
     make_resource_pack(resource_pack, slides, width, height)
     make_data_pack(data_pack, slides, screen_width, screen_height)
+
+    problems = verify(resource_pack, len(slides))
+    if problems:
+        for problem in problems[:10]:
+            print(f"自检失败: {problem}")
+        sys.exit(f"生成结果有问题,共 {len(problems)} 处,先不要部署。")
+    print(f"自检通过: {len(slides)} 页的模型、贴图与图集目录都正确")
 
     resource_zip = out_root / f"{PACK_NAME}-ResourcePack.zip"
     data_zip = out_root / f"{PACK_NAME}-Datapack.zip"

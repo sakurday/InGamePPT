@@ -132,6 +132,19 @@ require-resource-pack=true
 
 ## 待实测确认
 
+## 常见问题
+
+**屏幕上出现黑紫格子(缺失贴图)**
+
+两个原因,生成器的自检会把它们拦下来:
+
+1. **贴图没有放在图集收录的目录里。** 图集是按目录声明的——
+   `assets/minecraft/atlases/items.json` 只收录 `textures/item/`,
+   `assets/minecraft/atlases/blocks.json` 只收录 `textures/block/`。
+   放在别处(比如 `textures/page/`)的贴图**永远不会被打进图集**,模型就渲染成黑紫格子。
+   所以生成器把贴图写在 `assets/ppt/textures/item/page/` 下,模型里引用 `ppt:item/page/slide_N`。
+2. 模型引用的贴图或模型文件不存在(路径写错、少了一页)。
+
 这些我无法在本地验证,第一次跑的时候重点看这几处:
 
 1. **`item_display:"none"` 是否是合法取值。** 如果 `/function ppt:build` 报错、屏幕没出现,多半是这里;改成 `"fixed"` 再试。
