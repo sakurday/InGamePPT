@@ -26,18 +26,47 @@
 
 ## 生成
 
+推荐用 Python 脚本,不需要任何编译步骤。把脚本和幻灯片放在同一个文件夹里:
+
+```
+任意文件夹/
+  make_packs.py        <- 脚本
+  ppt/                 <- 幻灯片
+    1.png
+    2.png
+    ...
+```
+
+然后在该文件里执行:
+
 ```powershell
-# 1. 编译生成器(依赖地图方案里那套无 Bukkit 依赖的图像代码)
+python make_packs.py
+```
+
+脚本会自动读取**自己所在目录**下的 `ppt/`,生成的资源包和数据包也放在同一目录。可选项:
+
+```powershell
+python make_packs.py --width auto        # 按图集容量自动挑最大宽度
+python make_packs.py --width 800         # 指定贴图宽度(默认 640)
+python make_packs.py --screen 10x6       # 屏幕尺寸(默认 7x4)
+```
+
+脚本依赖 Pillow(`python -m pip install Pillow`)。输入格式由 Pillow 决定,`png / jpg / gif /
+bmp / webp` 都行,输出统一重编码成 PNG——所以源图是 WebP 也没问题。
+
+### 备选:Java 版生成器
+
+仓库里还有一份等价的 Java 实现 `tools/PackBuilder.java`,适合在已经编译过项目的情况下使用:
+
+```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 javac -encoding UTF-8 -cp out/plugin -d out/probe tools/PackBuilder.java
-
-# 2. 生成
-java -cp "out/plugin;out/probe" PackBuilder <幻灯片目录> dist <贴图宽度> <屏幕宽格> <屏幕高格>
-# 例:
 java -cp "out/plugin;out/probe" PackBuilder paper_server/plugins/InGamePPT/ppt dist 640 7 4
 ```
 
-幻灯片文件规则和之前一致:纯数字命名,`1.png`、`2.png`……,按数字顺序排序。
+两份实现生成的数据包逐文件一致(只有两个 JSON 文件的缩进不同),互为回归测试。
+
+幻灯片文件规则两边一致:纯数字命名,`1.png`、`2.png`……,按数字顺序排序,其它文件一律忽略。
 
 输出:
 

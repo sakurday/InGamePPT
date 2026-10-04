@@ -1,0 +1,330 @@
+#!/usr/bin/env python3
+"""把脚本所在文件夹里的 ppt/ 生成成资源包和数据包。
+
+用法(脚本和 ppt 文件夹放在一起):
+
+    python make_packs.py
+    python make_packs.py --width 800
+    python make_packs.py --width auto --screen 7x4
+
+幻灯片文件名必须是纯数字: 1.png、2.png、3.png ... 按数字顺序排序。
+可读格式由 Pillow 决定,包含 png/jpg/gif/bmp/webp,输出统一重编码为 PNG。
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+import zipfile
+from pathlib import Path
+
+try:
+    from PIL import Image
+except ImportError:  # pragma: no cover - 只做友好提示
+    sys.exit("需要 Pillow:\n    python -m pip install Pillow")
+
+
+# 取自 26.1.2 服务端 jar 里的 version.json
+RESOURCE_PACK_FORMAT = 84
+DATA_PACK_FORMAT = 101
+
+NAMESPACE = "ppt"
+PACK_NAME = "InGamePPT"
+SLIDE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "bmp", "webp"}
+
+# 图集要给打包留余量,mipmap 还要再多三分之一
+ATLAS_SIZES = (2048, 4096, 8192, 16384)
+PACKING_HEADROOM = 0.75
+MIPMAP_FACTOR = 1.33
+
+
+def scan_slides(folder: Path) -> tuple[list[tuple[int, Path]], int]:
+    """返回按页码排序的幻灯片,以及被忽略的重复页码数量。"""
+    found: dict[int, Path] = {}
+    duplicates = 0
+    for entry in sorted(folder.iterdir()):
+        if not entry.is_file():
+            continue
+        extension = entry.suffix.lower().lstrip(".")
+        if extension not in SLIDE_EXTENSIONS:
+            continue
+        if not entry.stem.isdigit():
+            continue
+        number = int(entry.stem)
+        if number < 1:
+            continue
+        if number in found:
+            duplicates += 1
+            continue
+        found[number] = entry
+    return sorted(found.items()), duplicates
+
+
+def fit_to_screen(path: Path, width: int, height: int) -> Image.Image:
+    """保持比例缩放到贴边,其余用黑色填充(居中)。"""
+    with Image.open(path) as opened:
+        image = opened.convert("RGBA")
+        scale = min(width / image.width, height / image.height)
+        scaled_width = max(1, round(image.width * scale))
+        scaled_height = max(1, round(image.height * scale))
+        resized = image.resize((scaled_width, scaled_height), Image.LANCZOS)
+
+    canvas = Image.new("RGB", (width, height), (0, 0, 0))
+    canvas.paste(resized, ((width - scaled_width) // 2, (height - scaled_height) // 2), resized)
+    return canvas
+
+
+def auto_width(pages: int, aspect: float, atlas: int = 8192) -> int:
+    """挑一个刚好能装进目标图集的最大宽度。"""
+    budget = atlas * atlas * PACKING_HEADROOM / MIPMAP_FACTOR
+    per_slide = budget / max(1, pages)
+    # per_slide = w * (w / aspect)
+    width = int((per_slide * aspect) ** 0.5)
+    return max(128, width // 16 * 16)
+
+
+def write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # 显式写 \n,否则 Windows 上会变成 CRLF,和别的实现产生无意义的差异
+    path.write_text(content, encoding="utf-8", newline="\n")
+
+
+def compact(value) -> str:
+    """命令里内嵌的 JSON 用紧凑写法,和 Java 版本的模板保持一致。"""
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def make_resource_pack(root: Path, slides: list[tuple[int, Path]],
+                       width: int, height: int) -> None:
+    write(root / "pack.mcmeta", json.dumps({
+        "pack": {
+            "pack_format": RESOURCE_PACK_FORMAT,
+            "description": f"{PACK_NAME} 幻灯片",
+        }
+    }, ensure_ascii=False, indent=2) + "\n")
+
+    total = len(slides)
+    for index, (_, path) in enumerate(slides):
+        page = index + 1
+        texture = root / f"assets/{NAMESPACE}/textures/page/slide_{page}.png"
+        texture.parent.mkdir(parents=True, exist_ok=True)
+        fit_to_screen(path, width, height).save(texture, "PNG", optimize=True)
+        if page % 20 == 0 or page == total:
+            print(f"  已处理 {page}/{total}")
+
+        write(root / f"assets/{NAMESPACE}/items/page_{page}.json", json.dumps({
+            "model": {
+                "type": "minecraft:model",
+                "model": f"{NAMESPACE}:page_{page}",
+            }
+        }, indent=2) + "\n")
+
+        # 居中,所以展示实体的位置就是屏幕中心。正反两面都贴图,其中一面是镜像的,
+        # 看到反字就把实体转 180 度。
+        write(root / f"assets/{NAMESPACE}/models/page_{page}.json", json.dumps({
+            "textures": {"0": f"{NAMESPACE}:page/slide_{page}"},
+            "elements": [{
+                "from": [-8, -8, 7.5],
+                "to": [8, 8, 8.5],
+                "faces": {
+                    "north": {"uv": [0, 0, 16, 16], "texture": "#0"},
+                    "south": {"uv": [16, 16, 0, 0], "texture": "#0"},
+                },
+            }],
+        }, indent=2) + "\n")
+
+
+def make_data_pack(root: Path, slides: list[tuple[int, Path]],
+                   screen_width: float, screen_height: float) -> None:
+    pages = len(slides)
+    functions = root / f"data/{NAMESPACE}/function"
+
+    write(root / "pack.mcmeta", json.dumps({
+        "pack": {
+            "pack_format": DATA_PACK_FORMAT,
+            "description": f"{PACK_NAME} 幻灯片控制",
+        }
+    }, ensure_ascii=False, indent=2) + "\n")
+
+    write(root / "data/minecraft/tags/function/load.json",
+          json.dumps({"values": [f"{NAMESPACE}:init"]}, indent=2) + "\n")
+    write(root / "data/minecraft/tags/function/tick.json",
+          json.dumps({"values": [f"{NAMESPACE}:tick"]}, indent=2) + "\n")
+
+    write(functions / "init.mcfunction", (
+        "# 只在第一次载入时创建记分板,重复 /reload 时这几行会报 \"already exists\",无害\n"
+        "scoreboard objectives add ppt.page dummy\n"
+        "scoreboard objectives add ppt_next trigger\n"
+        "scoreboard objectives add ppt_prev trigger\n"
+        "scoreboard players set #page ppt.page 1\n"
+    ))
+
+    # 讲者可能没有 op,所以翻页也开放成触发器;触发器用过一次会被禁用,因此每刻重新启用
+    write(functions / "tick.mcfunction", (
+        "scoreboard players enable @a ppt_next\n"
+        "scoreboard players enable @a ppt_prev\n"
+        f"execute as @a[scores={{ppt_next=1..}}] run function {NAMESPACE}:next\n"
+        "scoreboard players reset @a[scores={ppt_next=1..}] ppt_next\n"
+        f"execute as @a[scores={{ppt_prev=1..}}] run function {NAMESPACE}:prev\n"
+        "scoreboard players reset @a[scores={ppt_prev=1..}] ppt_prev\n"
+    ))
+
+    # 一个实体就是一整块屏幕,翻页只改它的 item_model 组件
+    width_text = f"{screen_width:g}"
+    height_text = f"{screen_height:g}"
+    summon = (
+        "execute anchored eyes positioned ^ ^ ^4 rotated ~ 180 run summon minecraft:item_display ~ ~ ~ "
+        f'{{Tags:["ppt_screen"],width:{width_text}f,height:{height_text}f,view_range:2.0f,'
+        'brightness:{sky:15,block:15},item_display:"none",'
+        f'item:{{id:"minecraft:paper",count:1,components:{{"minecraft:item_model":"{NAMESPACE}:page_1"}}}},'
+        f"transformation:{{translation:[0f,0f,0f],left_rotation:[0f,0f,0f,1f],"
+        f"scale:[{width_text}f,{height_text}f,1f],right_rotation:[0f,0f,0f,1f]}}}}"
+    )
+    write(functions / "build.mcfunction", (
+        f"# 讲者站到屏幕中心的位置,朝墙面执行: function {NAMESPACE}:build\n"
+        "# 屏幕出现在讲者视线前方 4 格处,并转过来面对讲者\n"
+        f"{summon}\n"
+        "scoreboard players set #page ppt.page 1\n"
+        f"function {NAMESPACE}:refresh\n"
+    ))
+
+    write(functions / "clear.mcfunction",
+          "kill @e[type=minecraft:item_display, tag=ppt_screen]\n")
+
+    last_message = compact({"text": f"已经是最后一页了 ({pages}/{pages})", "color": "yellow"})
+    write(functions / "next.mcfunction", (
+        f"execute if score #page ppt.page matches {pages + 1}.. "
+        f"if entity @s[type=minecraft:player] run tellraw @s {last_message}\n"
+        f"execute unless score #page ppt.page matches {pages + 1}.. "
+        "run scoreboard players add #page ppt.page 1\n"
+        f"function {NAMESPACE}:refresh\n"
+    ))
+
+    first_message = compact({"text": f"已经是第一页了 (1/{pages})", "color": "yellow"})
+    write(functions / "prev.mcfunction", (
+        "execute if score #page ppt.page matches ..1 "
+        f"if entity @s[type=minecraft:player] run tellraw @s {first_message}\n"
+        "execute unless score #page ppt.page matches ..1 "
+        "run scoreboard players remove #page ppt.page 1\n"
+        f"function {NAMESPACE}:refresh\n"
+    ))
+
+    refresh = ["# 按当前页码刷新屏幕"]
+    for page in range(1, pages + 1):
+        refresh.append(f"execute if score #page ppt.page matches {page} "
+                       f"run function {NAMESPACE}:show_{page}")
+    write(functions / "refresh.mcfunction", "\n".join(refresh) + "\n")
+
+    for index, (_, path) in enumerate(slides):
+        page = index + 1
+        actionbar = compact({"text": f"第 {page}/{pages} 页  {path.name}", "color": "aqua"})
+        write(functions / f"show_{page}.mcfunction", (
+            "data merge entity @e[tag=ppt_screen,limit=1] "
+            f'{{item:{{id:"minecraft:paper",count:1,components:{{"minecraft:item_model":"{NAMESPACE}:page_{page}"}}}}}}\n'
+            f"execute if entity @s[type=minecraft:player] run title @s actionbar {actionbar}\n"
+        ))
+
+
+def zip_folder(source: Path, target: Path) -> None:
+    files = sorted(path for path in source.rglob("*") if path.is_file())
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for path in files:
+            archive.write(path, path.relative_to(source).as_posix())
+
+
+def sha1(path: Path) -> str:
+    digest = hashlib.sha1()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def report(slides, resource_pack, data_pack, resource_zip, data_zip, width, height) -> None:
+    pages = len(slides)
+    total_pixels = pages * width * height
+    print(f"贴图尺寸 : {width}x{height},共 {pages} 页")
+    print(f"贴图总量 : {total_pixels / 1_000_000:.1f} M 像素")
+    print("  图集需要有约 25% 打包余量,加上 mipmap 再乘 1.33:")
+    for size in ATLAS_SIZES:
+        capacity = size * size
+        fits = "可以" if capacity * PACKING_HEADROOM >= total_pixels * MIPMAP_FACTOR else "装不下"
+        print(f"    {size:>5} x {size:<5} = {capacity / 1_000_000:>6.1f} M 像素  {fits}")
+
+    print(f"\n资源包: {resource_pack}")
+    print(f"  assets/{NAMESPACE}/items/     {pages} 个物品模型定义")
+    print(f"  assets/{NAMESPACE}/models/    {pages} 个平面模型")
+    print(f"  assets/{NAMESPACE}/textures/  {pages} 张贴图")
+    print(f"  格式 {RESOURCE_PACK_FORMAT},zip {resource_zip.stat().st_size / 1048576:.1f} MB")
+
+    print(f"\n数据包: {data_pack}")
+    print(f"  格式 {DATA_PACK_FORMAT},zip {data_zip.stat().st_size / 1048576:.2f} MB")
+
+    print("\n=== 把这行填进 server.properties ===")
+    print(f"resource-pack=<{resource_zip.name} 放到 HTTP 服务上后的 URL>")
+    print(f"resource-pack-sha1={sha1(resource_zip)}")
+    print("require-resource-pack=true")
+    print(f"\n=== 数据包 zip 放进 <世界目录>/datapacks/ 后 /reload ===")
+    print(f"然后进游戏执行: /function {NAMESPACE}:build")
+
+
+def main() -> None:
+    script_dir = Path(__file__).resolve().parent
+    parser = argparse.ArgumentParser(
+        description="把 ppt/ 里的幻灯片生成资源包与数据包",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="默认读取脚本同目录下的 ppt/,输出也放在脚本同目录。")
+    parser.add_argument("--slides", type=Path, default=script_dir / "ppt",
+                        help="幻灯片目录(默认: 脚本同目录下的 ppt/)")
+    parser.add_argument("--out", type=Path, default=script_dir,
+                        help="输出目录(默认: 脚本同目录)")
+    parser.add_argument("--width", default="640",
+                        help="贴图宽度,或 auto 按图集容量自动选(默认 640)")
+    parser.add_argument("--screen", default="7x4",
+                        help="屏幕尺寸,格为单位,例如 7x4 或 10x6(默认 7x4)")
+    args = parser.parse_args()
+
+    try:
+        screen_width, screen_height = (float(v) for v in args.screen.lower().split("x"))
+    except ValueError:
+        sys.exit("--screen 格式应为 宽x高,例如 7x4")
+
+    slides_folder: Path = args.slides
+    if not slides_folder.is_dir():
+        sys.exit(f"找不到幻灯片目录: {slides_folder}")
+
+    slides, duplicates = scan_slides(slides_folder)
+    if not slides:
+        sys.exit(f"{slides_folder} 里没有幻灯片。文件名必须是纯数字,例如 1.png、2.png。")
+
+    if args.width == "auto":
+        width = auto_width(len(slides), screen_width / screen_height)
+        print(f"自动选择贴图宽度: {width}")
+    else:
+        width = int(args.width)
+    height = round(width * screen_height / screen_width)
+    height += height % 2
+
+    print(f"幻灯片   : {len(slides)} 页 ({slides_folder})")
+    if duplicates:
+        print(f"注意     : 有 {duplicates} 个重复页码被忽略")
+
+    out_root: Path = args.out
+    resource_pack = out_root / f"{PACK_NAME}-ResourcePack"
+    data_pack = out_root / f"{PACK_NAME}-Datapack"
+
+    make_resource_pack(resource_pack, slides, width, height)
+    make_data_pack(data_pack, slides, screen_width, screen_height)
+
+    resource_zip = out_root / f"{PACK_NAME}-ResourcePack.zip"
+    data_zip = out_root / f"{PACK_NAME}-Datapack.zip"
+    zip_folder(resource_pack, resource_zip)
+    zip_folder(data_pack, data_zip)
+
+    report(slides, resource_pack, data_pack, resource_zip, data_zip, width, height)
+
+
+if __name__ == "__main__":
+    main()
