@@ -54,18 +54,6 @@ python make_packs.py --screen 10x6       # 屏幕尺寸(默认 7x4)
 脚本依赖 Pillow(`python -m pip install Pillow`)。输入格式由 Pillow 决定,`png / jpg / gif /
 bmp / webp` 都行,输出统一重编码成 PNG——所以源图是 WebP 也没问题。
 
-### 备选:Java 版生成器
-
-仓库里还有一份等价的 Java 实现 `tools/PackBuilder.java`,适合在已经编译过项目的情况下使用:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
-javac -encoding UTF-8 -cp out/plugin -d out/probe tools/PackBuilder.java
-java -cp "out/plugin;out/probe" PackBuilder paper_server/plugins/InGamePPT/ppt dist 640 7 4
-```
-
-两份实现生成的数据包逐文件一致(只有两个 JSON 文件的缩进不同),互为回归测试。
-
 幻灯片文件规则两边一致:纯数字命名,`1.png`、`2.png`……,按数字顺序排序,其它文件一律忽略。
 
 ### 关于 `pack.mcmeta` 的格式号
@@ -112,14 +100,41 @@ require-resource-pack=true
 
 ## 使用
 
-讲者站到屏幕应该在的位置,朝向墙面:
+### 摆放和调整大小
+
+位置和尺寸都存在 `storage ppt:config` 里,所以既可以"站着摆",也可以给精确数值。
+
+**随手摆**——站到屏幕中心该在的位置,执行:
 
 ```
-/function ppt:build     生成屏幕并显示第 1 页
+/function ppt:build     屏幕中心落在你的视线高度,朝向沿用你的朝向
+/function ppt:info      查看当前数值
 /function ppt:next      下一页
 /function ppt:prev      上一页
 /function ppt:clear     删除屏幕
 ```
+
+**精确控制**——先 `/function ppt:info` 看当前数值,再直接改:
+
+```
+/data modify storage ppt:config x set value 100.5
+/data modify storage ppt:config y set value 65
+/data modify storage ppt:config z set value 200.5
+/data modify storage ppt:config yaw set value 180
+/data modify storage ppt:config width set value 10
+/data modify storage ppt:config height set value 5.714
+/function ppt:apply                                  应用(会保留当前页码)
+```
+
+几个要点:
+
+- **实体的位置就是屏幕中心**,不是左下角,所以摆放时按中心去算
+- `yaw` 是朝向;如果看到文字是镜像的,把它加 180 即可(模型正反两面都贴了图)
+- `width` / `height` 单位是**格**,同时决定实体碰撞箱,所以站远时也不会被错误裁剪
+- **`height` 必须跟着 `width` 走,否则画面会被拉伸**:`height = width × (纹理高 / 纹理宽)`。
+  用 `--screen 7x4` 生成时比例是 4/7,所以 `height = width × 0.5714`。`/function ppt:info` 会把
+  这个倍数直接印出来
+- 想换一个完全不同的比例(比如整面 16:9 的墙),要重新生成资源包:`--screen 16x9`
 
 讲者如果没有 op,可以用记分板触发器(数据包每刻自动重新启用):
 
@@ -144,6 +159,16 @@ require-resource-pack=true
    放在别处(比如 `textures/page/`)的贴图**永远不会被打进图集**,模型就渲染成黑紫格子。
    所以生成器把贴图写在 `assets/ppt/textures/item/page/` 下,模型里引用 `ppt:item/page/slide_N`。
 2. 模型引用的贴图或模型文件不存在(路径写错、少了一页)。
+
+**画面被拉伸了**
+
+`width` / `height` 的比例和贴图比例不一致。贴图比例由生成时的 `--screen` 决定,改尺寸时要按
+比例缩放两个值,具体倍数用 `/function ppt:info` 查。
+
+**站远了屏幕就消失**
+
+实体碰撞箱(`width` / `height` 字段)和实际尺寸不符。用 `/function ppt:apply` 重建即可,它会
+按 storage 里的宽高同时设置缩放与碰撞箱。
 
 这些我无法在本地验证,第一次跑的时候重点看这几处:
 

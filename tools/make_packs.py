@@ -152,6 +152,10 @@ def make_data_pack(root: Path, slides: list[tuple[int, Path]],
                    screen_width: float, screen_height: float) -> None:
     pages = len(slides)
     functions = root / f"data/{NAMESPACE}/function"
+    config = f"storage {NAMESPACE}:config"
+    width_text = f"{screen_width:g}"
+    height_text = f"{screen_height:g}"
+    ratio = screen_height / screen_width
 
     write(root / "pack.mcmeta", pack_meta(DATA_PACK_FORMAT, f"{PACK_NAME} 幻灯片控制"))
 
@@ -160,13 +164,21 @@ def make_data_pack(root: Path, slides: list[tuple[int, Path]],
     write(root / "data/minecraft/tags/function/tick.json",
           json.dumps({"values": [f"{NAMESPACE}:tick"]}, indent=2) + "\n")
 
-    write(functions / "init.mcfunction", (
-        "# 只在第一次载入时创建记分板,重复 /reload 时这几行会报 \"already exists\",无害\n"
-        "scoreboard objectives add ppt.page dummy\n"
-        "scoreboard objectives add ppt_next trigger\n"
-        "scoreboard objectives add ppt_prev trigger\n"
-        "scoreboard players set #page ppt.page 1\n"
-    ))
+    write(functions / "init.mcfunction", "\n".join([
+        "# 只在第一次载入时创建记分板,重复 /reload 时这几行会报 \"already exists\",无害",
+        "scoreboard objectives add ppt.page dummy",
+        "scoreboard objectives add ppt_next trigger",
+        "scoreboard objectives add ppt_prev trigger",
+        "scoreboard objectives add ppt.calc dummy",
+        "scoreboard players set #page ppt.page 1",
+        "# 屏幕的位置与尺寸,只在缺失时写入,不会覆盖你改过的值",
+        f"execute unless data {config} x run data modify {config} x set value 0.0",
+        f"execute unless data {config} y run data modify {config} y set value 64.0",
+        f"execute unless data {config} z run data modify {config} z set value 0.0",
+        f"execute unless data {config} yaw run data modify {config} yaw set value 0.0",
+        f"execute unless data {config} width run data modify {config} width set value {width_text}",
+        f"execute unless data {config} height run data modify {config} height set value {height_text}",
+    ]) + "\n")
 
     # 讲者可能没有 op,所以翻页也开放成触发器;触发器用过一次会被禁用,因此每刻重新启用
     write(functions / "tick.mcfunction", (
@@ -178,23 +190,59 @@ def make_data_pack(root: Path, slides: list[tuple[int, Path]],
         "scoreboard players reset @a[scores={ppt_prev=1..}] ppt_prev\n"
     ))
 
-    # 一个实体就是一整块屏幕,翻页只改它的 item_model 组件
-    width_text = f"{screen_width:g}"
-    height_text = f"{screen_height:g}"
-    summon = (
-        "execute anchored eyes positioned ^ ^ ^4 rotated ~ 180 run summon minecraft:item_display ~ ~ ~ "
-        f'{{Tags:["ppt_screen"],width:{width_text}f,height:{height_text}f,view_range:2.0f,'
+    # 位置和尺寸都由 storage 里的数值决定,所以可以用宏函数做精确控制。
+    # 实体位置就是屏幕中心,scale 直接取宽高(模型是 1 格见方)。
+    write(functions / "place.mcfunction", (
+        "# 内部函数: 按 storage 的数值重建屏幕,由 build / apply 调用\n"
+        f'kill @e[type=minecraft:item_display, tag=ppt_screen]\n'
+        f'$summon minecraft:item_display $(x) $(y) $(z) '
+        '{Tags:["ppt_screen"],Rotation:[$(yaw)f,0f],'
+        'width:$(width)f,height:$(height)f,view_range:2.0f,'
         'brightness:{sky:15,block:15},item_display:"none",'
         f'item:{{id:"minecraft:paper",count:1,components:{{"minecraft:item_model":"{NAMESPACE}:page_1"}}}},'
-        f"transformation:{{translation:[0f,0f,0f],left_rotation:[0f,0f,0f,1f],"
-        f"scale:[{width_text}f,{height_text}f,1f],right_rotation:[0f,0f,0f,1f]}}}}"
-    )
+        'transformation:{translation:[0f,0f,0f],left_rotation:[0f,0f,0f,1f],'
+        'scale:[$(width)f,$(height)f,1f],right_rotation:[0f,0f,0f,1f]}}\n'
+    ))
+
+    # 把屏幕摆到讲者现在站的位置,中心在视线高度,朝向沿用讲者朝向。
+    # 数值统一经记分板转成 double:直接存 Rotation 会留下浮点标签,宏替换出来就是
+    # "180.0ff" 这种畸形字面量。
+    def store_double(path: str, key: str) -> str:
+        return (
+            f"execute store result score #v ppt.calc run data get entity @s {path} 100\n"
+            f"execute store result {config} {key} double 0.01 run scoreboard players get #v ppt.calc"
+        )
+
     write(functions / "build.mcfunction", (
-        f"# 讲者站到屏幕中心的位置,朝墙面执行: function {NAMESPACE}:build\n"
-        "# 屏幕出现在讲者视线前方 4 格处,并转过来面对讲者\n"
-        f"{summon}\n"
-        "scoreboard players set #page ppt.page 1\n"
+        "# 站到屏幕中心该在的位置,执行本函数:屏幕中心落在视线高度,朝向沿用你的朝向\n"
+        + store_double("Pos[0]", "x") + "\n"
+        + "execute store result score #v ppt.calc run data get entity @s Pos[1] 100\n"
+        "# +150 即抬高 1.5 格到视线高度\n"
+        "scoreboard players add #v ppt.calc 150\n"
+        + f"execute store result {config} y double 0.01 run scoreboard players get #v ppt.calc\n"
+        + store_double("Pos[2]", "z") + "\n"
+        + store_double("Rotation[0]", "yaw") + "\n"
+        + f"function {NAMESPACE}:apply\n"
+        + f"tellraw @s {compact({'text': '屏幕已放到你的位置,用 /function ' + NAMESPACE + ':info 查看数值', 'color': 'green'})}\n"
+    ))
+
+    # 改完 storage 里的数值后调它:重建屏幕并保持当前页码
+    write(functions / "apply.mcfunction", (
+        f"function {NAMESPACE}:place with {config}\n"
         f"function {NAMESPACE}:refresh\n"
+    ))
+
+    # 数值查询:宏函数把 storage 的值直接打进聊天栏,顺便把修改方式也印出来
+    write(functions / "info.mcfunction", f"function {NAMESPACE}:info_print with {config}\n")
+    write(functions / "info_print.mcfunction", (
+        f'$tellraw @s [{{"text":"屏幕中心 ","color":"gray"}},{{"text":"$(x) $(y) $(z)","color":"white"}}]\n'
+        f'$tellraw @s [{{"text":"朝向 ","color":"gray"}},{{"text":"yaw=$(yaw)","color":"white"}},'
+        '{"text":"   尺寸 ","color":"gray"},{"text":"$(width) x $(height) 格","color":"white"}]\n'
+        f'tellraw @s {compact({"text": f"改数值: /data modify {config} <x|y|z|yaw|width|height> set value <值>",
+                              "color": "dark_gray"})}\n'
+        f'tellraw @s {compact({"text": f"然后 /function {NAMESPACE}:apply 生效", "color": "dark_gray"})}\n'
+        f'tellraw @s {compact({"text": f"纹理比例 {screen_width:g}:{screen_height:g},高度应为宽度的 {ratio:.4f} 倍",
+                              "color": "dark_gray"})}\n'
     ))
 
     write(functions / "clear.mcfunction",
@@ -236,9 +284,15 @@ def make_data_pack(root: Path, slides: list[tuple[int, Path]],
 
 def zip_folder(source: Path, target: Path) -> None:
     files = sorted(path for path in source.rglob("*") if path.is_file())
-    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+    # 条目时间戳固定,否则内容没变也会因为 mtime 不同而产生不同的 SHA1,
+    # 客户端就会白白重下一遍资源包。
+    fixed_time = (1980, 1, 1, 0, 0, 0)
+    with zipfile.ZipFile(target, "w") as archive:
         for path in files:
-            archive.write(path, path.relative_to(source).as_posix())
+            info = zipfile.ZipInfo(path.relative_to(source).as_posix(), date_time=fixed_time)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            archive.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
 
 
 def verify(resource_pack: Path, pages: int) -> list[str]:
