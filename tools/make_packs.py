@@ -245,7 +245,9 @@ def make_data_pack(root: Path, slides: list[tuple[int, Path]],
         'minecraft:item_name="PPT 定位蛋",'
         # 借用原版某个物品的外观,省得再打包一张贴图
         'minecraft:item_model="minecraft:ender_eye",'
-        'minecraft:entity_data={Tags:["ppt_mover"],NoAI:1b,Silent:1b,NoGravity:1b,'
+        # 26.1.2 的 entity_data 组件要求带 id 字段(实体类型),裸 NBT 复合会解析失败:
+        #   Malformed 'minecraft:entity_data' component: Expected 'id' field
+        'minecraft:entity_data={id:"minecraft:pig",Tags:["ppt_mover"],NoAI:1b,Silent:1b,NoGravity:1b,'
         'Invulnerable:1b,PersistenceRequired:1b,Fire:-1s,'
         'DeathLootTable:"minecraft:empty"}]\n'
         f"tellraw @s {compact({'text': '拿好定位蛋:对着想放屏幕的位置右键,屏幕中心就挪过去', 'color': 'green'})}\n"
