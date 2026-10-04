@@ -3,9 +3,13 @@
 
 用法(脚本和 ppt 文件夹放在一起):
 
-    python make_packs.py
-    python make_packs.py --width 800
-    python make_packs.py --width auto --screen 7x4
+    python make_packs.py                 交互式选清晰度
+    python make_packs.py --preset 3      直接选第 3 档
+    python make_packs.py --width 1280    直接指定贴图宽度
+    python make_packs.py --width auto    按 8192 图集容量自动选
+
+清晰度就是贴图的像素密度:屏幕在眼前占多少屏幕像素,就给它多少贴图像素。
+密度不够是画面发糊的唯一原因,把屏幕格数搞大反而会让同一张贴图铺得更开、更糊。
 
 幻灯片文件名必须是纯数字: 1.png、2.png、3.png ... 按数字顺序排序。
 可读格式由 Pillow 决定,包含 png/jpg/gif/bmp/webp,输出统一重编码为 PNG。
@@ -17,6 +21,7 @@ import argparse
 import hashlib
 import json
 import sys
+import unicodedata
 import zipfile
 from pathlib import Path
 
@@ -42,6 +47,24 @@ SLIDE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "bmp", "webp"}
 ATLAS_SIZES = (2048, 4096, 8192, 16384)
 PACKING_HEADROOM = 0.75
 MIPMAP_FACTOR = 1.33
+
+# 清晰度预设:每格屏幕宽度分到多少贴图像素。
+# 1080p 下坐在 3~5 格外看一块 7 格宽的屏,它大约占 1000~1800 个屏幕像素,
+# 所以 96 偏省流量、128 够用、160 舒服、200 是给"字小 + 坐得近"准备的。
+CLEARITY_PRESETS = (
+    ("省流量", 96),
+    ("标准", 128),
+    ("清晰", 160),
+    ("高清", 200),
+)
+DEFAULT_PRESET_NAME = "清晰"
+
+# "最高"档的封顶密度:1080p 下坐 3 格看 7 格宽的屏,一格最多也就分到 250 来个屏幕像素,
+# 再往上纯粹是浪费图集容量,所以留一点余量给 4K 和凑近看的人。
+MAX_PRESET_DENSITY = 320
+
+# 资源包 zip 体积的粗略估算:实测每像素约 0.25~0.42 字节
+ESTIMATED_BYTES_PER_PIXEL = 0.3
 
 
 def scan_slides(folder: Path) -> tuple[list[tuple[int, Path]], int]:
@@ -89,6 +112,106 @@ def auto_width(pages: int, aspect: float, atlas: int = 8192) -> int:
     return max(128, width // 16 * 16)
 
 
+def slide_height(width: int, screen_width: float, screen_height: float) -> int:
+    """贴图高度:保持屏幕比例,并对齐成偶数(原版缩放对奇数尺寸不友好)。"""
+    height = round(width * screen_height / screen_width)
+    return height + height % 2
+
+
+def atlas_needed(pages: int, width: int, height: int) -> int | None:
+    """能装下整副幻灯片的最小图集边长;连最大的图集都装不下时返回 None。"""
+    total = pages * width * height
+    for size in ATLAS_SIZES:
+        if size * size * PACKING_HEADROOM >= total * MIPMAP_FACTOR:
+            return size
+    return None
+
+
+def clarity_options(pages: int, screen_width: float, screen_height: float
+                    ) -> list[tuple[str, int, int, str]]:
+    """返回 [(名称, 贴图宽, 贴图高, 备注)]。最后一档按最大图集取理论上限。"""
+    options: list[tuple[str, int, int, str]] = []
+    for name, density in CLEARITY_PRESETS:
+        # 对齐到 16 的倍数,这样 mipmap 能保留满 4 级
+        width = max(16, round(density * screen_width / 16) * 16)
+        options.append((name, width, slide_height(width, screen_width, screen_height),
+                        f"{width / screen_width:.0f} px/格"))
+
+    # 页数一多,连最省流量的档都可能塞不进 8192 图集;给只支持 8192 的老显卡留一档
+    compat = auto_width(pages, screen_width / screen_height, atlas=8192)
+    if compat < options[0][1]:
+        options.insert(0, ("兼容", compat, slide_height(compat, screen_width, screen_height),
+                           f"{compat / screen_width:.0f} px/格"))
+
+    best = auto_width(pages, screen_width / screen_height, atlas=ATLAS_SIZES[-1])
+    best = min(best, max(16, round(MAX_PRESET_DENSITY * screen_width / 16) * 16))
+    if best > options[-1][1]:
+        options.append(("最高", best, slide_height(best, screen_width, screen_height),
+                        f"{best / screen_width:.0f} px/格,上限"))
+    return options
+
+
+def print_clarity_menu(options: list[tuple[str, int, int, str]], pages: int,
+                       screen_width: float, screen_height: float,
+                       default_index: int) -> None:
+    print("=== 选择清晰度 ===")
+    print(f"  屏幕 {screen_width:g} x {screen_height:g} 格,共 {pages} 页")
+    for index, (name, width, height, note) in enumerate(options, start=1):
+        needed = atlas_needed(pages, width, height)
+        atlas_text = f"{needed // 1024}k 图集" if needed else "装不下!"
+        megabytes = width * height * pages * ESTIMATED_BYTES_PER_PIXEL / 1048576
+        marker = "   <- 回车用这个" if index - 1 == default_index else ""
+        print(f"  {index}) {pad(name, 8)} {width:>5}x{height:<5} {pad(note, 16)}"
+              f"{pad(atlas_text, 10)} 包约 {megabytes:>3.0f} MB{marker}")
+    print("  说明: px/格 = 每格屏幕分到多少贴图像素,越高越清楚。8k 图集任何机器都能加载,"
+          "16k 图集需要显卡支持 16384 贴图(现代独显基本都行);装不下不是变糊,"
+          "是客户端加载资源包时直接崩。")
+
+
+def ask_clarity(pages: int, screen_width: float, screen_height: float
+                ) -> tuple[str, int, int, str]:
+    """交互式选清晰度。返回 options 里的一项。"""
+    options = clarity_options(pages, screen_width, screen_height)
+    fitting = [i for i, option in enumerate(options)
+               if atlas_needed(pages, option[1], option[2]) is not None]
+    if not fitting:
+        sys.exit(f"{pages} 页连 16384 图集都装不下,请减少页数或把屏幕设小一点。")
+
+    preferred = next((i for i, option in enumerate(options)
+                      if option[0] == DEFAULT_PRESET_NAME), None)
+    default_index = preferred if preferred in fitting else fitting[-1]
+
+    if not sys.stdin.isatty():
+        # 非交互式(重定向/计划任务):用默认档,免得脚本卡在 input() 上
+        print("非交互式运行,使用默认清晰度;要指定请加 --preset 或 --width。")
+        print_clarity_menu(options, pages, screen_width, screen_height, default_index)
+        return options[default_index]
+
+    print_clarity_menu(options, pages, screen_width, screen_height, default_index)
+    while True:
+        try:
+            raw = input(f"请输入序号 1-{len(options)},直接回车用默认 {default_index + 1}: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return options[default_index]
+        if not raw:
+            return options[default_index]
+
+        if raw.isdigit() and 1 <= int(raw) <= len(options):
+            index = int(raw) - 1
+        else:
+            matches = [i for i, option in enumerate(options) if raw in option[0]]
+            if len(matches) != 1:
+                print(f"  看不懂 {raw!r},请输入数字,或者直接回车用默认。")
+                continue
+            index = matches[0]
+
+        if atlas_needed(pages, options[index][1], options[index][2]) is None:
+            print("  这一档的贴图撑爆图集了,客户端会崩,换一档吧。")
+            continue
+        return options[index]
+
+
 def write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     # 显式写 \n,否则 Windows 上会变成 CRLF,和别的实现产生无意义的差异
@@ -98,6 +221,12 @@ def write(path: Path, content: str) -> None:
 def compact(value) -> str:
     """命令里内嵌的 JSON 用紧凑写法,和 Java 版本的模板保持一致。"""
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def pad(text: str, width: int) -> str:
+    """按终端显示宽度补空格:中文占两列,不这么补菜单会歪。"""
+    columns = sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
+    return text + " " * max(0, width - columns)
 
 
 def pack_meta(version: tuple[int, int], description: str) -> str:
@@ -384,16 +513,24 @@ def sha1(path: Path) -> str:
     return digest.hexdigest()
 
 
-def report(slides, resource_pack, data_pack, resource_zip, data_zip, width, height) -> None:
+def report(slides, resource_pack, data_pack, resource_zip, data_zip, width, height,
+           screen_width: float) -> None:
     pages = len(slides)
     total_pixels = pages * width * height
     print(f"贴图尺寸 : {width}x{height},共 {pages} 页")
+    print(f"像素密度 : {width / screen_width:.0f} px/格(屏幕 {screen_width:g} 格宽)")
     print(f"贴图总量 : {total_pixels / 1_000_000:.1f} M 像素")
     print("  图集需要有约 25% 打包余量,加上 mipmap 再乘 1.33:")
     for size in ATLAS_SIZES:
         capacity = size * size
         fits = "可以" if capacity * PACKING_HEADROOM >= total_pixels * MIPMAP_FACTOR else "装不下"
         print(f"    {size:>5} x {size:<5} = {capacity / 1_000_000:>6.1f} M 像素  {fits}")
+    needed = atlas_needed(pages, width, height)
+    if needed is None:
+        print("警告: 连 16384 图集都装不下,客户端加载资源包时会崩(Unable to fit)。"
+              "请降低清晰度或减少页数。")
+    elif needed == ATLAS_SIZES[-1]:
+        print("注意: 需要 16384 图集的显卡才能加载;只支持 8192 的老机器会在加载资源包时崩。")
 
     print(f"\n资源包: {resource_pack}")
     print(f"  assets/{NAMESPACE}/items/     {pages} 个物品模型定义")
@@ -424,8 +561,11 @@ def main() -> None:
                         help="幻灯片目录(默认: 脚本同目录下的 ppt/)")
     parser.add_argument("--out", type=Path, default=script_dir,
                         help="输出目录(默认: 脚本同目录)")
-    parser.add_argument("--width", default="640",
-                        help="贴图宽度,或 auto 按图集容量自动选(默认 640)")
+    clarity = parser.add_mutually_exclusive_group()
+    clarity.add_argument("--preset", default=None,
+                        help="清晰度档位:序号或名称(省流量/标准/清晰/高清/最高),不给就交互式询问")
+    clarity.add_argument("--width", default=None,
+                        help="直接指定贴图宽度,或 auto 按 8192 图集容量自动选;给了就不再询问")
     parser.add_argument("--screen", default="7x4",
                         help="屏幕尺寸,格为单位,例如 7x4 或 10x6(默认 7x4)")
     args = parser.parse_args()
@@ -443,17 +583,37 @@ def main() -> None:
     if not slides:
         sys.exit(f"{slides_folder} 里没有幻灯片。文件名必须是纯数字,例如 1.png、2.png。")
 
-    if args.width == "auto":
-        width = auto_width(len(slides), screen_width / screen_height)
-        print(f"自动选择贴图宽度: {width}")
-    else:
-        width = int(args.width)
-    height = round(width * screen_height / screen_width)
-    height += height % 2
-
     print(f"幻灯片   : {len(slides)} 页 ({slides_folder})")
     if duplicates:
         print(f"注意     : 有 {duplicates} 个重复页码被忽略")
+
+    if args.width is not None:
+        if args.width == "auto":
+            width = auto_width(len(slides), screen_width / screen_height)
+            height = slide_height(width, screen_width, screen_height)
+            print(f"贴图宽度 : {width}(--width auto,按 8192 图集容量自动选)")
+        else:
+            width = int(args.width)
+            height = slide_height(width, screen_width, screen_height)
+            print(f"贴图宽度 : {width}(--width 指定,已跳过清晰度询问)")
+        print(f"像素密度 : {width / screen_width:.0f} px/格")
+    else:
+        options = clarity_options(len(slides), screen_width, screen_height)
+        if args.preset is not None:
+            index = next((i for i, option in enumerate(options)
+                          if args.preset == str(i + 1) or args.preset == option[0]), None)
+            if index is None:
+                names = "、".join(f"{i + 1}={option[0]}" for i, option in enumerate(options))
+                sys.exit(f"没有这一档: {args.preset}。可选: {names}")
+            chosen = options[index]
+            # -1 表示不做"回车用这个"的标记:这一档是指定死的,不是在问
+            print_clarity_menu(options, len(slides), screen_width, screen_height, -1)
+        else:
+            chosen = ask_clarity(len(slides), screen_width, screen_height)
+        name, width, height, note = chosen
+        print(f"清晰度   : {name} ({width}x{height},{note})")
+        if atlas_needed(len(slides), width, height) is None:
+            print("警告: 这一档连 16384 图集都装不下,客户端会崩,建议换一档。")
 
     out_root: Path = args.out
     resource_pack = out_root / f"{PACK_NAME}-ResourcePack"
@@ -474,7 +634,8 @@ def main() -> None:
     zip_folder(resource_pack, resource_zip)
     zip_folder(data_pack, data_zip)
 
-    report(slides, resource_pack, data_pack, resource_zip, data_zip, width, height)
+    report(slides, resource_pack, data_pack, resource_zip, data_zip, width, height,
+           screen_width)
 
 
 if __name__ == "__main__":

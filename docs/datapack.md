@@ -43,13 +43,43 @@
 python make_packs.py
 ```
 
-脚本会自动读取**自己所在目录**下的 `ppt/`,生成的资源包和数据包也放在同一目录。可选项:
+脚本会自动读取**自己所在目录**下的 `ppt/`,生成的资源包和数据包也放在同一目录。
+
+### 清晰度
+
+每跑一次都会先把几档清晰度列出来让你选,选完才开始生成:
+
+```
+=== 选择清晰度 ===
+  屏幕 7 x 4 格,共 88 页
+  1) 省流量     672x384   96 px/格      8k 图集   包约   6 MB
+  2) 标准       896x512   128 px/格     16k 图集  包约  12 MB
+  3) 清晰      1120x640   160 px/格     16k 图集  包约  18 MB   <- 回车用这个
+  4) 高清      1408x806   201 px/格     16k 图集  包约  29 MB
+  5) 最高      1728x988   247 px/格,上限 16k 图集  包约  43 MB
+请输入序号 1-5,直接回车用默认 3:
+```
+
+档位是按**每格屏幕分到多少贴图像素**定的,因为画面发糊只跟这一件事有关:1080p 下坐在
+3~5 格外看一块 7 格宽的屏,它大约占 1000~1800 个屏幕像素,所以 96 px/格偏省流量、
+128 够用、160 舒服、200 是给"字小 + 坐得近"准备的。把屏幕格数做大不会更清楚——同一张
+贴图铺得更开,只会更糊。
+
+菜单里的图集档位是硬限制:贴图拼进 items 图集,图集边长取显卡的 max texture size
+(桌面卡一般 16384,老卡/集显 8192)。超过不是变糊,而是客户端加载资源包时直接崩
+(`StitcherException: Unable to fit: ... Maybe try a lower resolution resourcepack?`)。
+页数多到装不下时,先出一档"兼容"(按 8192 图集算),实在不行就拆成两个包分两场加载。
+
+想跳过询问、让脚本无人值守地跑,可选项:
 
 ```powershell
-python make_packs.py --width auto        # 按图集容量自动挑最大宽度
-python make_packs.py --width 800         # 指定贴图宽度(默认 640)
+python make_packs.py --preset 3          # 直接选第 3 档(也可以写档位名,如 --preset 清晰)
+python make_packs.py --width 1280        # 直接指定贴图宽度
+python make_packs.py --width auto        # 按 8192 图集容量自动挑宽度
 python make_packs.py --screen 10x6       # 屏幕尺寸(默认 7x4)
 ```
+
+标准输入被重定向时(比如计划任务)不会卡在询问上,会自动用默认档。
 
 脚本依赖 Pillow(`python -m pip install Pillow`)。输入格式由 Pillow 决定,`png / jpg / gif /
 bmp / webp` 都行,输出统一重编码成 PNG——所以源图是 WebP 也没问题。
@@ -70,7 +100,8 @@ Pack declares support for version newer than 64, but is missing mandatory fields
 - 字段写法对照原版自带的 `data/minecraft/datapacks/*/pack.mcmeta`
 
 当前是资源包 `min_format: [84, 0]` / `max_format: 84`,数据包 `min_format: [101, 1]` /
-`max_format: 101`。以后游戏版本更新时,改 `make_packs.py` 和 `PackBuilder.java` 顶部的两个常量即可。
+`max_format: 101`。以后游戏版本更新时,改 `make_packs.py` 顶部的 `RESOURCE_PACK_FORMAT` 与
+`DATA_PACK_FORMAT` 即可。
 
 输出:
 
@@ -81,7 +112,7 @@ dist/InGamePPT-Datapack/          数据包目录
 dist/InGamePPT-Datapack.zip       数据包(丢进世界 datapacks/)
 ```
 
-生成完会打印每张图的像素总量、各级图集能否装下、以及资源包的 SHA1。
+生成完会打印贴图尺寸、每格像素密度、各级图集能否装下、以及资源包的 SHA1。
 
 ## 部署
 

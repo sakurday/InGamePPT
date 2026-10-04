@@ -24,6 +24,9 @@ paper_server/
 .vscode/
 *.swp
 
+# ---------------------------------------------------------------- python
+__pycache__/
+
 # ---------------------------------------------------------------- safety net
 # Nothing in this project is a binary that belongs in git. This also stops the
 # 50 MB server jar or a built plugin from being committed by accident.
