@@ -133,13 +133,16 @@ def make_resource_pack(root: Path, slides: list[tuple[int, Path]],
             }
         }, indent=2) + "\n")
 
-        # 居中,所以展示实体的位置就是屏幕中心。正反两面都贴图,其中一面是镜像的,
-        # 看到反字就把实体转 180 度。
+        # 必须相对模型原点居中:ItemDisplayRenderer 只做了一次绕 Y 轴 180° 旋转,
+        # 没有任何居中平移,所以模型坐标系原点就是实体位置。
+        # 面片原先照抄 item/generated 放在 z 7.5~8.5,中心在 z=8 单位(半格),
+        # 会让整块屏幕偏离实体位置半格。这里改成 z -0.5~0.5,中心落在原点。
+        # 正反两面都贴图,其中一面是镜像的,看到反字就把 yaw 加 180。
         write(root / f"assets/{NAMESPACE}/models/page_{page}.json", json.dumps({
             "textures": {"0": f"{NAMESPACE}:item/page/slide_{page}"},
             "elements": [{
-                "from": [-8, -8, 7.5],
-                "to": [8, 8, 8.5],
+                "from": [-8, -8, -0.5],
+                "to": [8, 8, 0.5],
                 "faces": {
                     "north": {"uv": [0, 0, 16, 16], "texture": "#0"},
                     "south": {"uv": [16, 16, 0, 0], "texture": "#0"},
