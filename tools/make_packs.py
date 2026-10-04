@@ -191,6 +191,8 @@ def make_data_pack(root: Path, slides: list[tuple[int, Path]],
         "scoreboard players reset @a[scores={ppt_next=1..}] ppt_next\n"
         f"execute as @a[scores={{ppt_prev=1..}}] run function {NAMESPACE}:prev\n"
         "scoreboard players reset @a[scores={ppt_prev=1..}] ppt_prev\n"
+        "# 定位蛋刷出的生物:把屏幕挪过去再把它清掉\n"
+        f"execute as @e[tag=ppt_mover] at @s run function {NAMESPACE}:move_here\n"
     ))
 
     # 位置和尺寸都由 storage 里的数值决定,所以可以用宏函数做精确控制。
@@ -235,6 +237,48 @@ def make_data_pack(root: Path, slides: list[tuple[int, Path]],
         f"function {NAMESPACE}:refresh\n"
     ))
 
+    # 定位蛋:用刷怪蛋当"把屏幕搬到这"的工具。
+    # 蛋里带 entity_data,给刷出的生物打上 ppt_mover 标签;tick 里看到这个标签就
+    # 把屏幕挪到生物位置并把它清掉——这样不需要插件,也不需要玩家会输坐标。
+    write(functions / "mover_egg.mcfunction", (
+        "give @s minecraft:pig_spawn_egg["
+        'minecraft:item_name="PPT 定位蛋",'
+        # 借用原版某个物品的外观,省得再打包一张贴图
+        'minecraft:item_model="minecraft:ender_eye",'
+        'minecraft:entity_data={Tags:["ppt_mover"],NoAI:1b,Silent:1b,NoGravity:1b,'
+        'Invulnerable:1b,PersistenceRequired:1b,Fire:-1s,'
+        'DeathLootTable:"minecraft:empty"}]\n'
+        f"tellraw @s {compact({'text': '拿好定位蛋:对着想放屏幕的位置右键,屏幕中心就挪过去', 'color': 'green'})}\n"
+    ))
+
+    write(functions / "move_here.mcfunction", (
+        "# 内部函数:由 tick 对每个带 ppt_mover 标签的生物执行(@s 是那只生物)\n"
+        f"data modify {config} x set from entity @s Pos[0]\n"
+        f"data modify {config} y set from entity @s Pos[1]\n"
+        f"data modify {config} z set from entity @s Pos[2]\n"
+        f"tellraw @a[distance=..16] {compact({'text': 'PPT 已移动到此处', 'color': 'green'})}\n"
+        "kill @s\n"
+        f"function {NAMESPACE}:apply\n"
+    ))
+
+    # 朝向的两个正交操作:转向自己 / 掉个面。
+    # 哪个面是"正"取决于模型的 UV 约定,与其猜,不如让这两个命令组合出正确朝向。
+    write(functions / "face_me.mcfunction", (
+        "# 站在屏幕前面执行:让屏幕转向你当前的朝向\n"
+        "execute store result score #v ppt.calc run data get entity @s Rotation[0] 100\n"
+        f"execute store result {config} yaw double 0.01 run scoreboard players get #v ppt.calc\n"
+        f"function {NAMESPACE}:apply\n"
+        f"tellraw @s {compact({'text': '屏幕已转向你的朝向;若看到反字,再用 /function ' + NAMESPACE + ':flip', 'color': 'green'})}\n"
+    ))
+
+    write(functions / "flip.mcfunction", (
+        "# 屏幕正反面掉个个儿:看到镜像的文字时用\n"
+        f"execute store result score #v ppt.calc run data get {config} yaw 100\n"
+        "scoreboard players add #v ppt.calc 18000\n"
+        f"execute store result {config} yaw double 0.01 run scoreboard players get #v ppt.calc\n"
+        f"function {NAMESPACE}:apply\n"
+    ))
+
     # 数值查询:宏函数把 storage 的值直接打进聊天栏,顺便把修改方式也印出来
     write(functions / "info.mcfunction", f"function {NAMESPACE}:info_print with {config}\n")
     write(functions / "info_print.mcfunction", (
@@ -245,6 +289,8 @@ def make_data_pack(root: Path, slides: list[tuple[int, Path]],
                               "color": "dark_gray"})}\n'
         f'tellraw @s {compact({"text": f"然后 /function {NAMESPACE}:apply 生效", "color": "dark_gray"})}\n'
         f'tellraw @s {compact({"text": f"纹理比例 {screen_width:g}:{screen_height:g},高度应为宽度的 {ratio:.4f} 倍",
+                              "color": "dark_gray"})}\n'
+        f'tellraw @s {compact({"text": f"快速移动: /function {NAMESPACE}:mover_egg 拿定位蛋,右键就能把屏幕挪过去",
                               "color": "dark_gray"})}\n'
     ))
 
