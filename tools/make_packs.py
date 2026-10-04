@@ -255,6 +255,8 @@ def make_data_pack(root: Path, slides: list[tuple[int, Path]],
 
     write(functions / "move_here.mcfunction", (
         "# 内部函数:由 tick 对每个带 ppt_mover 标签的生物执行(@s 是那只生物)\n"
+        "# 守卫:玩家手动执行时 @s 是自己,没有这个函数就会把自己 kill 掉\n"
+        "execute unless entity @s[tag=ppt_mover] run return fail\n"
         f"data modify {config} x set from entity @s Pos[0]\n"
         f"data modify {config} y set from entity @s Pos[1]\n"
         f"data modify {config} z set from entity @s Pos[2]\n"
